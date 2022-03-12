@@ -1,6 +1,10 @@
+import logging
+
+logging.basicConfig(level=logging.INFO)
+
 from shutil import copyfile
 from os.path import exists
-from discord import ApplicationContext, ButtonStyle, Interaction
+from discord import ApplicationContext, ButtonStyle, Interaction, Intents, Member
 from discord.ext import commands
 from discord.ui import Modal, InputText, View, button, Button
 
@@ -15,7 +19,7 @@ if exists("config.toml"):
         config = load(f)
 else:
     print("config.toml does not exists. generate default config.toml")
-    copyfile("default_config.toml","config.toml")
+    copyfile("default_config.toml", "config.toml")
     print("Edit your config and restart this bot")
 
 rd = Redis(
@@ -39,10 +43,13 @@ class LinkModal(Modal):
         nickname, code = map(lambda x: x.value, self.children)
         code = code.replace(" ", "")
         print(nickname, code)
-        if not rd.exists(nickname):
-            pass
-        else:
-            pass
+        await interaction.user.remove_roles(newbie_role)
+        await interaction.user.edit(nick=nickname)
+        await interaction.response.send_message("성공적으로 인증되었습니다.", ephemeral=True)
+        # if not rd.exists(nickname):
+        #    pass
+        # else:
+        #    pass
 
 
 class VerifyView(View):
@@ -57,27 +64,35 @@ class VerifyView(View):
     async def verify(self, button: Button, interaction: Interaction):
         if newbie_role in interaction.user.roles:
             await interaction.response.send_modal(LinkModal())
+        else:
+            await interaction.response.send_message("이미 인증한 계정입니다.", ephemeral=True)
 
 
 class Bot(commands.Bot):
     def __init__(self):
-        super().__init__()
+        super().__init__(intents=Intents(members=True, guilds=True))
         self.views_added = False
 
     async def on_ready(self):
 
         global channel
         global newbie_role
-        channel = self.get_channel(config["discord"]["verify_channel_id"])
-        newbie_role = self.get_guild(config["discord"]["guild_id"]).get_role(
-            config["discord"]["newbie_role_id"]
-        )
+
+        guild = self.get_guild(config["discord"]["guild_id"])
+        channel = guild.get_channel(config["discord"]["verify_channel_id"])
+        newbie_role = guild.get_role(config["discord"]["newbie_role_id"])
+        print(repr(guild))
+        print(repr(channel))
+        print(repr(newbie_role))
         if not self.views_added:
             self.add_view(VerifyView())
             self.views_added = True
 
         print(f"Logged in as {self.user} (ID: {self.user.id})")
         print("------")
+
+    async def on_member_join(self, member: Member):
+        await member.add_roles(newbie_role)
 
 
 bot = Bot()
