@@ -2,107 +2,146 @@ import logging
 
 logging.basicConfig(level=logging.INFO)
 
-from shutil import copyfile
-from os.path import exists
-from discord import ApplicationContext, ButtonStyle, Interaction, Intents, Member
+import re
+import shutil
+import tomli
+import redis
+
+import discord
+from discord import ui
 from discord.ext import commands
-from discord.ui import Modal, InputText, View, button, Button
+from __future__ import annotations
 
-from tomli import load
-from redis import Redis
-from re import compile
+REGEX_CODE = re.compile(r"\d{3} ?\d{3}")
 
-REGEX_CODE = compile(r"\d{3} ?\d{3}")
-
-if exists("config.toml"):
+try:
     with open("config.toml", "rb") as f:
-        config = load(f)
-else:
-    print("config.toml does not exists. generate default config.toml")
-    copyfile("default_config.toml", "config.toml")
-    print("Edit your config and restart this bot")
+        config = tomli.load(f)
+except FileNotFoundError:
+    print("config.toml was not found; creating a default config.")
+    print("Edit your config file and restart the bot")
+    shutil.copyfile("default.toml", "config.toml")
+    exit(1)
 
-rd = Redis(
-    host=config["redis"]["host"], port=config["redis"]["port"], db=config["redis"]["db"]
+db = redis.Redis(
+    host=config["redis"]["host"],
+    port=config["redis"]["port"],
+    db=config["redis"]["db"],
 )
 
 
-class LinkModal(Modal):
-    def __init__(self) -> None:
+class LinkModal(ui.Modal):
+    def __init__(self, bot: IroBot):
         super().__init__(title="인증")
-        self.add_item(InputText(label="닉네임", placeholder="마인크래프트 닉네임을 입력하세요."))
+        self.bot = bot
         self.add_item(
-            InputText(
-                label="인증번호", placeholder="000000", min_length=6, max_length=6, row=1
+            ui.InputText(
+                label="닉네임",
+                placeholder="마인크래프트 닉네임을 입력하세요.",
+                row=1,
+            )
+        )
+        self.add_item(
+            ui.InputText(
+                label="인증번호",
+                placeholder="000000",
+                min_length=6,
+                max_length=6,
+                row=2,
             )
         )
 
-    async def callback(self, interaction: Interaction):
-        nickname: str
-        code: str
-        nickname, code = map(lambda x: x.value, self.children)
-        code = code.replace(" ", "")
-        print(nickname, code)
-        await interaction.user.remove_roles(newbie_role)
-        await interaction.user.edit(nick=nickname)
+    async def callback(self, interaction: discord.Interaction):
+        nick = self.children[0].value
+        code = self.children[1].value
+        user = interaction.user
+        print(f"user: {user}, nick: {nick}, code: {code}")  # DEBUG
+        assert nick and code and isinstance(user, discord.Member)
+
+        code = "".join(code.split())  # remove whitespace
+        await user.remove_roles(self.bot.newbie_role)
+        await user.edit(nick=nick)
         await interaction.response.send_message("성공적으로 인증되었습니다.", ephemeral=True)
-        # if not rd.exists(nickname):
+        # if not db.exists(nickname):
         #    pass
         # else:
         #    pass
 
 
-class VerifyView(View):
-    def __init__(self):
+class VerifyView(ui.View):
+    def __init__(self, bot: IroBot):
         super().__init__(timeout=None)
+        self.bot = bot
 
-    @button(
+    @ui.button(
         label=config["message"]["verify_button"],
-        style=ButtonStyle.green,
+        style=discord.ButtonStyle.green,
         custom_id="dislinkmc:verify",
     )
-    async def verify(self, button: Button, interaction: Interaction):
-        if newbie_role in interaction.user.roles:
-            await interaction.response.send_modal(LinkModal())
+    async def verify(self, button: ui.Button, interaction: discord.Interaction):
+        assert isinstance(interaction.user, discord.Member)
+        if self.bot.newbie_role in interaction.user.roles:
+            modal = LinkModal(self.bot)
+            await interaction.response.send_modal(modal)
         else:
-            await interaction.response.send_message("이미 인증한 계정입니다.", ephemeral=True)
+            await interaction.response.send_message("이미 인증된 계정입니다.", ephemeral=True)
 
 
-class Bot(commands.Bot):
-    def __init__(self):
-        super().__init__(intents=Intents(members=True, guilds=True))
-        self.views_added = False
+class IroBot(commands.Bot):
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.initialized = False
+
+        self.working_guild: discord.Guild
+        self.verify_channel: discord.TextChannel
+        self.newbie_role: discord.Role
 
     async def on_ready(self):
-
-        global channel
-        global newbie_role
+        if self.initialized:
+            return
+        self.initialized = True
 
         guild = self.get_guild(config["discord"]["guild_id"])
+        assert isinstance(guild, discord.Guild)
+
         channel = guild.get_channel(config["discord"]["verify_channel_id"])
-        newbie_role = guild.get_role(config["discord"]["newbie_role_id"])
-        print(repr(guild))
-        print(repr(channel))
-        print(repr(newbie_role))
-        if not self.views_added:
-            self.add_view(VerifyView())
-            self.views_added = True
+        role = guild.get_role(config["discord"]["newbie_role_id"])
+        assert isinstance(channel, discord.TextChannel)
+        assert isinstance(role, discord.Role)
 
-        print(f"Logged in as {self.user} (ID: {self.user.id})")
-        print("------")
+        self.working_guild = guild
+        self.verify_channel = channel
+        self.newbie_role = role
 
-    async def on_member_join(self, member: Member):
-        await member.add_roles(newbie_role)
+        print(repr(guild))  # DEBUG
+        print(repr(channel))  # DEBUG
+        print(repr(role))  # DEBUG
+
+        view = VerifyView(self)
+        self.add_view(view)
+
+        msg = f"Logged in as {self.user} ({self.user.id})"  # type: ignore
+        print(f"{msg}\n{'-'*len(msg)}")
+
+    async def on_member_join(self, member: discord.Member):
+        await member.add_roles(self.newbie_role)
 
 
-bot = Bot()
+intents = discord.Intents(members=True, guilds=True)
+bot = IroBot(intents=intents)
 
 
 @bot.slash_command(name="init", guild_ids=[config["discord"]["guild_id"]])
 @commands.is_owner()
-async def init(ctx: ApplicationContext):
-    await channel.send(view=VerifyView())
+async def init(ctx: discord.ApplicationContext):
+    await bot.verify_channel.send(view=VerifyView(bot))
     await ctx.respond("초기화가 완료되었습니다.", ephemeral=True)
+
+
+@bot.slash_command(name="userinfo", guild_ids=[config["discord"]["guild_id"]])
+@commands.is_owner()
+async def userinfo(ctx: discord.ApplicationContext, user: discord.User):
+    ... # TODO: Query info from DB
 
 
 bot.run(config["bot"]["token"])
