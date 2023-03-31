@@ -17,7 +17,7 @@ py-cord==2.0.0b5
 pycares==4.1.2
 pycparser==2.21
 pyparsing==3.0.7
-redis==4.1.4
+redis==4.4.4
 tomli==2.0.1
 wrapt==1.14.0
 yarl==1.7.2
